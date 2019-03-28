@@ -3,7 +3,7 @@ https://challenger.ai/competition/adp2018 无人驾驶视觉感知竞赛初赛�
 用一个模型解决标检测和可行驶区域分割
 初赛和决赛都是用的一个模型  作为basebone（resnet50-maskrcnn） + driverable branch
 # Gluon CV Toolkit
-![](./demo/pghpm-bddv3onehotmask_rcnn_resnet50_v1b_camera_0001.gif)
+![](https://github.com/AaronLeong/challenagerAI-gluon-cv/blob/master/demo/bddv3onehotmask_rcnn_resnet50_v1b_camera_0001.gif)
 
 [![Build Status](http://ci.mxnet.io/job/gluon-cv/job/master/badge/icon)](http://ci.mxnet.io/job/gluon-cv/job/master/)
 [![GitHub license](http://dmlc.github.io/img/apache2.svg)](./LICENSE)
