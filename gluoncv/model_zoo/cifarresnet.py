@@ -28,12 +28,20 @@ import os
 from mxnet.gluon.block import HybridBlock
 from mxnet.gluon import nn
 from mxnet import cpu
+from .DPConv import DPConv2D
 
 # Helpers
+# def _conv3x3(channels, stride, in_channels):
+#     return nn.Conv2D(channels, kernel_size=3, strides=stride, padding=1,
+#                      use_bias=False, in_channels=in_channels)
+
 def _conv3x3(channels, stride, in_channels):
     return nn.Conv2D(channels, kernel_size=3, strides=stride, padding=1,
                      use_bias=False, in_channels=in_channels)
-
+# Helpers
+# def dp_conv3x3(channels, stride, in_channels):
+#     return nn.Conv2D(channels, kernel_size=3, strides=stride, padding=1,
+#                      use_bias=False, in_channels=in_channels)
 
 # Blocks
 class CIFARBasicBlockV1(HybridBlock):

@@ -300,6 +300,37 @@ def random_flip(src, px=0, py=0, copy=False):
         src = src.copy()
     return src, (flip_x, flip_y)
 
+def flip_likes(src, flip_x=False, flip_y=False, copy=False):
+    """Randomly flip image along horizontal and vertical with probabilities.
+
+    Parameters
+    ----------
+    src : mxnet.nd.NDArray
+        Input image with HWC format.
+    px : float
+        Horizontal flip probability [0, 1].
+    py : float
+        Vertical flip probability [0, 1].
+    copy : bool
+        If `True`, return a copy of input
+
+    Returns
+    -------
+    mxnet.nd.NDArray
+        Augmented image.
+    tuple
+        Tuple of (flip_x, flip_y), records of whether flips are applied.
+
+    """
+
+    if flip_y:
+        src = nd.flip(src, axis=0)
+    if flip_x:
+        src = nd.flip(src, axis=1)
+    if copy:
+        src = src.copy()
+    return src
+
 def resize_contain(src, size, fill=0):
     """Resize the image to fit in the given area while keeping aspect ratio.
 

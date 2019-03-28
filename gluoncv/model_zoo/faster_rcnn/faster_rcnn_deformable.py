@@ -8,14 +8,15 @@ from mxnet.gluon import nn
 from .rcnn_target import RCNNTargetSampler, RCNNTargetGenerator
 from ..rcnn import RCNN
 from ..rpn import RPN
+from ..layer import DeformableConv2D
 
-__all__ = ['FasterRCNN', 'get_faster_rcnn',
-           'faster_rcnn_resnet50_v1b_voc',
-           'faster_rcnn_resnet50_v1b_coco',
-           'faster_rcnn_resnet50_v1b_custom']
+__all__ = ['DeformableFasterRCNN', 'get_deformable_faster_rcnn',
+           'deformable_faster_rcnn_resnet50_v1b_voc',
+           'deformable_faster_rcnn_resnet50_v1b_coco',
+           'deformable_faster_rcnn_resnet50_v1b_custom']
 
 
-class FasterRCNN(RCNN):
+class DeformableFasterRCNN(RCNN):
     r"""Faster RCNN network.
 
     Parameters
@@ -136,7 +137,7 @@ class FasterRCNN(RCNN):
                  rpn_test_pre_nms=6000, rpn_test_post_nms=300, rpn_min_size=16,
                  num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
                  additional_output=False, **kwargs):
-        super(FasterRCNN, self).__init__(
+        super(DeformableFasterRCNN, self).__init__(
             features=features, top_features=top_features, classes=classes,
             short=short, max_size=max_size, train_patterns=train_patterns,
             nms_thresh=nms_thresh, nms_topk=nms_topk, post_nms=post_nms,
@@ -146,6 +147,9 @@ class FasterRCNN(RCNN):
         self._rpn_test_post_nms = rpn_test_post_nms
         self._target_generator = {RCNNTargetGenerator(self.num_class)}
         self._additional_output = additional_output
+
+        num_deformable_group = 4
+        kernel_size = 3
         with self.name_scope():
             self.rpn = RPN(
                 channels=rpn_channel, stride=stride, base_size=base_size,
@@ -156,6 +160,17 @@ class FasterRCNN(RCNN):
             self.sampler = RCNNTargetSampler(
                 num_image=self._max_batch, num_proposal=rpn_train_post_nms,
                 num_sample=num_sample, pos_iou_thresh=pos_iou_thresh, pos_ratio=pos_ratio)
+
+            # self.offset = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+            #     padding=1, use_bias=False, weight_initializer='zeros', prefix='offset')
+            # self.deform_conv = DeformableConv2D(rpn_channel, kernel_size, 
+            #     padding=1, num_deformable_group=num_deformable_group, 
+            #     use_bias=False, in_channels=rpn_channel)
+            # self.deform_normal = nn.BatchNorm()      
+
+            self.deformableLayers = DeformableBottleneckV1b(int(rpn_channel/2))
+
+            # self.deformConv = DeformableConv2D(1024,3,1,1)
 
     @property
     def target_generator(self):
@@ -170,7 +185,7 @@ class FasterRCNN(RCNN):
         return list(self._target_generator)[0]
 
     def reset_class(self, classes):
-        super(FasterRCNN, self).reset_class(classes)
+        super(DeformableFasterRCNN, self).reset_class(classes)
         self._target_generator = {RCNNTargetGenerator(self.num_class)}
 
     # pylint: disable=arguments-differ
@@ -201,6 +216,14 @@ class FasterRCNN(RCNN):
                 return [x]
 
         feat = self.features(x)
+
+        feat = self.deformableLayers(feat)
+        # print('feat', feat.shape)
+        # offset = self.offset(feat)
+        # # print('offset', offset.shape)
+        # feat = F.Activation(self.deform_normal(self.deform_conv(feat, offset)), act_type='relu')
+        # # feat2 = F.contrib.DeformableConvolution(feat,)
+        # print('feat2', feat.shape) # (1, 1024, 45, 80)
         # RPN proposals
         if autograd.is_training():
             rpn_score, rpn_box, raw_rpn_score, raw_rpn_box, anchors = \
@@ -284,7 +307,7 @@ class FasterRCNN(RCNN):
             return ids, scores, bboxes, top_feat, feat
         return ids, scores, bboxes
 
-def get_faster_rcnn(name, dataset, pretrained=False, ctx=mx.cpu(),
+def get_deformable_faster_rcnn(name, dataset, pretrained=False, ctx=mx.cpu(),
                     root=os.path.join('~', '.mxnet', 'models'), **kwargs):
     r"""Utility function to return faster rcnn networks.
 
@@ -307,14 +330,14 @@ def get_faster_rcnn(name, dataset, pretrained=False, ctx=mx.cpu(),
         The Faster-RCNN network.
 
     """
-    net = FasterRCNN(**kwargs)
+    net = DeformableFasterRCNN(**kwargs)
     if pretrained:
         from ..model_store import get_model_file
         full_name = '_'.join(('faster_rcnn', name, dataset))
         net.load_parameters(get_model_file(full_name, root=root), ctx=ctx)
     return net
 
-def faster_rcnn_resnet50_v1b_voc(pretrained=False, pretrained_base=True, **kwargs):
+def deformable_faster_rcnn_resnet50_v1b_voc(pretrained=False, pretrained_base=True, **kwargs):
     r"""Faster RCNN model from the paper
     "Ren, S., He, K., Girshick, R., & Sun, J. (2015). Faster r-cnn: Towards
     real-time object detection with region proposal networks"
@@ -348,7 +371,7 @@ def faster_rcnn_resnet50_v1b_voc(pretrained=False, pretrained_base=True, **kwarg
     for layer in ['layer4']:
         top_features.add(getattr(base_network, layer))
     train_patterns = '|'.join(['.*dense', '.*rpn', '.*down(2|3|4)_conv', '.*layers(2|3|4)_conv'])
-    return get_faster_rcnn(
+    return get_deformable_faster_rcnn(
         name='resnet50_v1b', dataset='voc', pretrained=pretrained,
         features=features, top_features=top_features, classes=classes,
         short=600, max_size=1000, train_patterns=train_patterns,
@@ -361,7 +384,7 @@ def faster_rcnn_resnet50_v1b_voc(pretrained=False, pretrained_base=True, **kwarg
         num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
         **kwargs)
 
-def faster_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwargs):
+def deformable_faster_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwargs):
     r"""Faster RCNN model from the paper
     "Ren, S., He, K., Girshick, R., & Sun, J. (2015). Faster r-cnn: Towards
     real-time object detection with region proposal networks"
@@ -408,7 +431,7 @@ def faster_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwar
         num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
         **kwargs)
 
-def faster_rcnn_resnet50_v1b_custom(classes, transfer=None, pretrained_base=True,
+def deformable_faster_rcnn_resnet50_v1b_custom(classes, transfer=None, pretrained_base=True,
                                     pretrained=False, **kwargs):
     r"""Faster RCNN model with resnet50_v1b base network on custom dataset.
 
@@ -460,3 +483,142 @@ def faster_rcnn_resnet50_v1b_custom(classes, transfer=None, pretrained_base=True
         net = get_model('faster_rcnn_resnet50_v1b_' + str(transfer), pretrained=True, **kwargs)
         net.reset_class(classes)
     return net
+
+
+class DeformableBottleneckV1b(nn.HybridBlock):
+    """ResNetV1b BottleneckV1b
+    """
+    # dilated=False, use_global_stats=True
+    # pylint: disable=unused-argument
+    expansion = 4
+    def __init__(self, planes, strides=1, dilation=1,
+                 downsample=None, previous_dilation=1, norm_layer=nn.BatchNorm,
+                 norm_kwargs={}, last_gamma=False, **kwargs):
+        super(DeformableBottleneckV1b, self).__init__()
+        
+        with self.name_scope():
+            self.conv1 = nn.Conv2D(channels=planes, kernel_size=1,
+                                use_bias=False)
+            self.bn1 = norm_layer(**norm_kwargs)
+            self.conv11 = nn.Conv2D(channels=planes, kernel_size=1,
+                                use_bias=False)
+            self.bn11 = norm_layer(**norm_kwargs)
+
+            self.conv2 = nn.Conv2D(channels=planes, kernel_size=3, strides=strides,
+                                padding=dilation, dilation=dilation, use_bias=False)
+            self.bn2 = norm_layer(**norm_kwargs)
+            self.conv22 = nn.Conv2D(channels=planes, kernel_size=3, strides=strides,
+                                padding=dilation, dilation=dilation, use_bias=False)
+            self.bn22 = norm_layer(**norm_kwargs)
+
+            self.conv3 = nn.Conv2D(channels=planes * 2, kernel_size=1, use_bias=False)
+            if not last_gamma:
+                self.bn3 = norm_layer(**norm_kwargs)
+            else:
+                self.bn3 = norm_layer(gamma_initializer='zeros', **norm_kwargs)
+            self.relu = nn.Activation('relu')
+            self.downsample = downsample
+            self.dilation = dilation
+            self.strides = strides
+
+
+            num_deformable_group = 4
+            kernel_size = 3
+
+            # self.offset1 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+            #     padding=1, use_bias=False, weight_initializer='zeros', prefix='offset1')
+            # self.deform_conv1 = DeformableConv2D(planes, kernel_size, 
+            #     padding=1, num_deformable_group=num_deformable_group, 
+            #     use_bias=False, in_channels=planes*2)
+            # self.deform_bn1 = norm_layer(**norm_kwargs)   
+
+            # self.offset2 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+            #     padding=1, use_bias=False, weight_initializer='zeros', prefix='offset2')
+            # self.deform_conv2 = DeformableConv2D(planes, kernel_size, 
+            #     padding=1, num_deformable_group=num_deformable_group, 
+            #     use_bias=False, in_channels=planes*2)
+            # self.deform_bn2 = norm_layer(**norm_kwargs)   
+
+            # self.offset3 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+            #     padding=1, use_bias=False, weight_initializer='zeros', prefix='offset3')
+            # self.deform_conv3 = DeformableConv2D(planes, kernel_size, 
+            #     padding=1, num_deformable_group=num_deformable_group, 
+            #     use_bias=False, in_channels=planes*2)
+            
+            self.offset1 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+                padding=2, dilation=2, use_bias=False, weight_initializer='zeros', prefix='offset1')
+            self.deform_conv1 = DeformableConv2D(planes, kernel_size, 
+                padding=2, dilation=2, num_deformable_group=num_deformable_group, 
+                use_bias=False, in_channels=planes*2)
+            self.deform_bn1 = norm_layer(**norm_kwargs)   
+
+            self.offset2 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+                padding=2, dilation=2, use_bias=False, weight_initializer='zeros', prefix='offset2')
+            self.deform_conv2 = DeformableConv2D(planes, kernel_size, 
+                padding=2, dilation=2, num_deformable_group=num_deformable_group, 
+                use_bias=False, in_channels=planes*2)
+            self.deform_bn2 = norm_layer(**norm_kwargs)   
+
+            self.offset3 = nn.Conv2D(num_deformable_group * 2 * kernel_size * kernel_size, 3, 
+                padding=2, dilation=2, use_bias=False, weight_initializer='zeros', prefix='offset3')
+            self.deform_conv3 = DeformableConv2D(planes, kernel_size, 
+                padding=2, dilation=2, num_deformable_group=num_deformable_group, 
+                use_bias=False, in_channels=planes*2)
+
+            self.deform_bn3 = norm_layer(**norm_kwargs)     
+
+
+    def hybrid_forward(self, F, x):
+        residual = x
+        # 1024
+        out_offset1 = self.offset1(x)
+        out = self.deform_conv1(x, out_offset1)
+        out = self.deform_bn1(out)
+        out = self.relu(out)
+
+        out = self.conv1(out)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv11(out)
+        out = self.bn11(out)
+        out1 = F.tile(out, reps=(1,2,1,1))
+        out = out1 + residual
+        # out = F.broadcast_add(*[out, residual])
+        out = self.relu(out)
+
+        # 512
+        residual2 = out
+        out_offset2 = self.offset2(out)
+        out = self.deform_conv2(out, out_offset2)
+        out = self.deform_bn2(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+        out = self.conv22(out)
+        out = self.bn22(out)
+
+        out2 = F.tile(out, reps=(1,2,1,1))
+        out = out2 + residual2
+
+        # out = F.broadcast_add(*[out, residual2])
+        out = self.relu(out)
+
+        residual3 = out
+
+        out_offset3 = self.offset3(out)
+        out = self.deform_conv3(out, out_offset3)
+        out = self.deform_bn3(out)
+        out = self.relu(out)
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        # 1024
+        out = out + residual3
+        out = self.relu(out)
+
+        return out

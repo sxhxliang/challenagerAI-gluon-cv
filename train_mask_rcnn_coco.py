@@ -54,37 +54,38 @@ Appendix from [He16]_ and experiment detail from [Lin17]_ may also be useful ref
 # Make sure COCO dataset has been set up on your disk.
 # Then, we are ready to load training and validation images.
 
-from gluoncv.data import COCOInstance
+from gluoncv.data import BDDInstance
 # typically we use train2017 (i.e. train2014 + minival35k) split as training data
 # COCO dataset actually has images without any objects annotated,
 # which must be skipped during training to prevent empty labels
-train_dataset = COCOInstance(root='/Volumes/DATASET/BDD100k/bdd100k', splits='instances_train2018', skip_empty=True)
-# and val2014 (i.e. minival5k) test as validation data
-val_dataset = COCOInstance(splits='instances_val2018', skip_empty=False)
+train_dataset = BDDInstance(root='/Volumes/DATASET/BDD100k/bdd100k/', splits='bdd100k_to_coco_labels_images_val2018', skip_empty=True, use_color_maps=False)
+# and val2014 (i.e. minival5k) test as validation data/data1/datasets/bdd100k/
+val_dataset = BDDInstance(root='/Volumes/DATASET/BDD100k/bdd100k/', splits='bdd100k_to_coco_labels_images_val2018', skip_empty=False, use_color_maps=False)
 
 print('Training images:', len(train_dataset))
-print('Validation images:', len(val_dataset))
+# print('Validation images:', len(val_dataset))
 
 ##########################################################
 # Data transform
 # --------------
 # We can read an (image, label, segm) tuple from the training dataset:
-train_image, train_label, train_segm = train_dataset[6]
+train_image, train_label, train_segm = train_dataset[1]
 bboxes = train_label[:, :4]
 cids = train_label[:, 4:5]
 print('image:', train_image.shape)
 print('bboxes:', bboxes.shape, 'class ids:', cids.shape)
+print('drivable_map:', train_segm.shape)
 # segm is a list of polygons which are arrays of points on the object boundary
-print('masks', [[poly.shape for poly in polys] for polys in train_segm])
+# print('masks', [[poly.shape for poly in polys] for polys in train_segm])
 
 ##############################################################################
 # Plot the image with boxes and labels:
 from matplotlib import pyplot as plt
 from gluoncv.utils import viz
-
-fig = plt.figure(figsize=(10, 10))
-ax = fig.add_subplot(1, 1, 1)
-ax = viz.plot_bbox(train_image, bboxes, labels=cids, class_names=train_dataset.classes, ax=ax)
+plt.imshow(train_segm.asnumpy()* 80)
+# fig = plt.figure(figsize=(10, 10))
+# ax = fig.add_subplot(1, 1, 1)
+# ax = viz.plot_bbox(train_segm, bboxes, labels=cids, class_names=train_dataset.classes, ax=ax)
 plt.show()
 
 ##############################################################################
@@ -92,15 +93,15 @@ plt.show()
 import numpy as np
 from gluoncv.data.transforms import mask as tmask
 width, height = train_image.shape[1], train_image.shape[0]
-train_masks = np.stack([tmask.to_mask(polys, (width, height)) for polys in train_segm])
-plt_image = viz.plot_mask(train_image, train_masks)
+# train_masks = np.stack([tmask.to_mask(polys, (width, height)) for polys in train_segm])
+plt_image = viz.plot_drivable_map(train_image, [train_segm])
 
 ##############################################################################
 # Now plot the image with boxes, labels and masks
 fig = plt.figure(figsize=(10, 10))
 ax = fig.add_subplot(1, 1, 1)
 ax = viz.plot_bbox(plt_image, bboxes, labels=cids, class_names=train_dataset.classes, ax=ax)
-plt.show()
+# plt.show()
 
 ##############################################################################
 # Data transforms, i.e. decoding and transformation, are identical to Faster R-CNN
@@ -115,18 +116,19 @@ from mxnet import nd
 
 ##############################################################################
 short, max_size = 600, 1000  # resize image to short side 600 px, but keep maximum length within 1000
-train_transform = presets.rcnn.MaskRCNNDefaultTrainTransform(short, max_size)
-val_transform = presets.rcnn.MaskRCNNDefaultValTransform(short, max_size)
+train_transform = presets.rcnn.BDDMaskRCNNDefaultTrainTransform(short, max_size)
+val_transform = presets.rcnn.BDDMaskRCNNDefaultValTransform(short, max_size)
 
 ##############################################################################
 utils.random.seed(233)  # fix seed in this tutorial
 
 ##############################################################################
 # apply transforms to train image
+# print('segm', train_segm.shape)
 train_image2, train_label2, train_masks2 = train_transform(train_image, train_label, train_segm)
 print('tensor shape:', train_image2.shape)
 print('box and id shape:', train_label2.shape)
-print('mask shape', train_masks2.shape)
+print('drivable map shape', train_masks2.shape)
 
 ##############################################################################
 # Images in tensor are distorted because they no longer sit in (0, 255) range.
@@ -137,7 +139,7 @@ plt_image2 = (plt_image2 * 255).asnumpy().astype('uint8')
 ##############################################################################
 # The transform already converted polygons to masks and we plot them directly.
 width, height = plt_image2.shape[1], plt_image2.shape[0]
-plt_image2 = viz.plot_mask(plt_image2, train_masks2)
+plt_image2 = viz.plot_drivable_map(plt_image2, [train_masks2])
 
 fig = plt.figure(figsize=(10, 10))
 ax = fig.add_subplot(1, 1, 1)
@@ -186,7 +188,7 @@ for ib, batch in enumerate(train_loader):
 #    in practice we usually want to load pre-trained imagenet models by setting
 #    ``pretrained_base=True``.
 from gluoncv import model_zoo
-net = model_zoo.get_model('mask_rcnn_resnet50_v1b_coco', pretrained_base=False)
+net = model_zoo.get_model('mask_rcnn_resnet50_v1b_bdd', pretrained_base=False)
 print(net)
 
 ##############################################################################
@@ -194,11 +196,11 @@ print(net)
 # ``cids`` are the class labels,
 # ``scores`` are confidence scores of each prediction,
 # ``bboxes`` are absolute coordinates of corresponding bounding boxes.
-# ``masks`` are predicted segmentation masks corresponding to each bounding box
+# ``maps`` are predicted drivable maps corresponding to each image
 import mxnet as mx
 x = mx.nd.zeros(shape=(1, 3, 600, 800))
 net.initialize()
-cids, scores, bboxes, masks = net(x)
+cids, scores, bboxes, maps = net(x)
 
 ##############################################################################
 # During training, an additional output is returned:
@@ -208,7 +210,7 @@ from mxnet import autograd
 with autograd.train_mode():
     # this time we need ground-truth to generate high quality roi proposals during training
     gt_box = mx.nd.zeros(shape=(1, 1, 4))
-    cls_preds, box_preds, mask_preds, roi, samples, matches, rpn_score, rpn_box, anchors = net(x, gt_box)
+    cls_preds, box_preds, drivable_maps_pred, roi, samples, matches, rpn_score, rpn_box, anchors = net(x, gt_box)
 
 ##########################################################
 # Training losses
@@ -224,8 +226,9 @@ rcnn_cls_loss = mx.gluon.loss.SoftmaxCrossEntropyLoss()
 # and finally the loss to penalize inaccurate proposals
 rcnn_box_loss = mx.gluon.loss.HuberLoss()  # == smoothl1
 # the loss to penalize incorrect segmentation pixel prediction
-rcnn_mask_loss = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
-
+# rcnn_mask_loss = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
+# the loss to penalize incorrect drivable maps segmentation pixel prediction
+drivable_maps_loss = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
 ##########################################################
 # Training targets
 # ----------------
@@ -233,7 +236,7 @@ rcnn_mask_loss = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
 
 ##############################################################################
 # We also push RPN targets computation to CPU workers, so network is passed to transforms
-train_transform = presets.rcnn.MaskRCNNDefaultTrainTransform(short, max_size, net)
+train_transform = presets.rcnn.BDDMaskRCNNDefaultTrainTransform(short, max_size, net)
 # return images, labels, masks, rpn_cls_targets, rpn_box_targets, rpn_box_masks loosely
 batchify_fn = Tuple(*[Append() for _ in range(6)])
 # For the next part, we only use batch size 1
@@ -248,15 +251,15 @@ for ib, batch in enumerate(train_loader):
     if ib > 0:
         break
     with autograd.train_mode():
-        for data, label, masks, rpn_cls_targets, rpn_box_targets, rpn_box_masks in zip(*batch):
+        for data, label, drivable_maps, rpn_cls_targets, rpn_box_targets, rpn_box_masks in zip(*batch):
             gt_label = label[:, :, 4:5]
             gt_box = label[:, :, :4]
             # network forward
-            cls_preds, box_preds, mask_preds, roi, samples, matches, rpn_score, rpn_box, anchors = net(data, gt_box)
+            cls_preds, box_preds, drivable_maps_preds, roi, samples, matches, rpn_score, rpn_box, anchors = net(data, gt_box)
             # generate targets for rcnn
             cls_targets, box_targets, box_masks = net.target_generator(roi, samples, matches, gt_label, gt_box)
             # generate targets for mask head
-            mask_targets, mask_masks = net.mask_target(roi, masks, matches, cls_targets)
+            # mask_targets, mask_masks = net.mask_target(roi, masks, matches, cls_targets)
             print('data:', data.shape)
             # box and class labels
             print('box:', gt_box.shape)
@@ -271,8 +274,8 @@ for ib, batch in enumerate(train_loader):
             # mask out ignored box label
             print('rcnn box label:', box_targets.shape)
             print('rcnn box mask:', box_masks.shape)
-            print('rcnn mask label:', mask_targets.shape)
-            print('rcnn mask mask:', mask_masks.shape)
+            # print('rcnn mask label:', mask_targets.shape)
+            # print('rcnn mask mask:', mask_masks.shape)
 
 ##########################################################
 # Training loop
@@ -283,15 +286,15 @@ for ib, batch in enumerate(train_loader):
     if ib > 0:
         break
     with autograd.record():
-        for data, label, masks, rpn_cls_targets, rpn_box_targets, rpn_box_masks in zip(*batch):
+        for data, label, drivable_maps, rpn_cls_targets, rpn_box_targets, rpn_box_masks in zip(*batch):
             gt_label = label[:, :, 4:5]
             gt_box = label[:, :, :4]
             # network forward
-            cls_preds, box_preds, mask_preds, roi, samples, matches, rpn_score, rpn_box, anchors = net(data, gt_box)
+            cls_preds, box_preds, drivable_maps_preds, roi, samples, matches, rpn_score, rpn_box, anchors = net(data, gt_box)
             # generate targets for rcnn
             cls_targets, box_targets, box_masks = net.target_generator(roi, samples, matches, gt_label, gt_box)
             # generate targets for mask head
-            mask_targets, mask_masks = net.mask_target(roi, masks, matches, cls_targets)
+            # mask_targets, mask_masks = net.mask_target(roi, masks, matches, cls_targets)
 
             # losses of rpn
             rpn_score = rpn_score.squeeze(axis=-1)
@@ -305,11 +308,13 @@ for ib, batch in enumerate(train_loader):
             rcnn_loss2 = rcnn_box_loss(box_preds, box_targets, box_masks) * box_preds.size / box_preds.shape[0] / num_rcnn_pos
 
             # loss of mask
-            mask_loss = rcnn_mask_loss(mask_preds, mask_targets, mask_masks) * mask_targets.size / mask_targets.shape[0] / mask_masks.sum()
-
+            # mask_loss = rcnn_mask_loss(mask_preds, mask_targets, mask_masks) * mask_targets.size / mask_targets.shape[0] / mask_masks.sum()
+            # loss of drivable
+            drivable_maps_loss = drivable_maps_loss(drivable_maps_preds, drivable_maps) 
+            # drivable_maps_preds
         # some standard gluon training steps:
-        # autograd.backward([rpn_loss1, rpn_loss2, rcnn_loss1, rcnn_loss2, mask_loss])
-        # trainer.step(batch_size)
+        autograd.backward([rpn_loss1, rpn_loss2, rcnn_loss1, rcnn_loss2, drivable_maps_loss])
+        trainer.step(batch_size)
 
 ##############################################################################
 # .. hint::

@@ -8,6 +8,7 @@ from .dataloader import DetectionDataLoader, RandomTransformDataLoader
 from .pascal_voc.detection import VOCDetection
 from .mscoco.detection import COCODetection
 from .mscoco.instance import COCOInstance
+from .bdd.instance import BDDInstance
 from .pascal_voc.segmentation import VOCSegmentation
 from .pascal_aug.segmentation import VOCAugSegmentation
 from .ade20k.segmentation import ADE20KSegmentation

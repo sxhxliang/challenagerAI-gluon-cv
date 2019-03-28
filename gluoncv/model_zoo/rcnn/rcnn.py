@@ -99,6 +99,8 @@ class RCNN(gluon.HybridBlock):
             self.box_to_center = BBoxCornerToCenter()
             self.box_decoder = NormalizedBoxCenterDecoder(clip=clip)
 
+        # print(features)
+        # print(top_features)
     def collect_train_params(self, select=None):
         """Collect trainable params.
 

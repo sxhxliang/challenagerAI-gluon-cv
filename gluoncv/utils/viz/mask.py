@@ -86,3 +86,41 @@ def plot_mask(img, masks, alpha=0.5):
         mask = np.repeat((mask > 0)[:, :, np.newaxis], repeats=3, axis=2)
         img = np.where(mask, img * (1 - alpha) + color * alpha, img)
     return img.astype('uint8')
+
+def plot_drivable_map(img, drivable_map, alpha=0.5):
+    """Visualize segmentation mask.
+
+    Parameters
+    ----------
+    img : numpy.ndarray or mxnet.nd.NDArray
+        Image with shape `H, W, 3`.
+    masks : numpy.ndarray or mxnet.nd.NDArray
+        Binary images with shape `N, H, W`.
+    alpha : float, optional, default 0.5
+        Transparency of plotted mask
+
+    Returns
+    -------
+    numpy.ndarray
+        The image plotted with segmentation masks
+
+    """
+    if isinstance(img, mx.nd.NDArray):
+        img = img.asnumpy()
+    
+    
+    if isinstance(drivable_map, mx.nd.NDArray):
+        drivable_map = drivable_map.asnumpy()
+    print(drivable_map.shape)
+    if drivable_map.shape[0]==3:
+        mask = np.sum(drivable_map, axis=0)
+    else:
+        mask = np.sum(drivable_map, axis=2)
+
+    if img.shape[:2] != drivable_map.shape:
+        mask = mx.img.resize_long(drivable_map, list(img.shape[:2]))
+    print(mask.shape)
+    color = np.random.random(3) * 255
+    mask = np.repeat((mask > 0)[:, :, np.newaxis], repeats=3, axis=2)
+    img = np.where(mask, img * (1 - alpha) + color * alpha, img)
+    return img.astype('uint8')

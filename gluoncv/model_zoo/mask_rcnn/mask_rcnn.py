@@ -6,10 +6,13 @@ import mxnet as mx
 from mxnet import autograd
 from mxnet.gluon import nn
 from ..faster_rcnn.faster_rcnn import FasterRCNN
+# from ..faster_rcnn.faster_rcnn_deformable import DeformableFasterRCNN
 from .rcnn_target import MaskTargetGenerator
 
 __all__ = ['MaskRCNN', 'get_mask_rcnn',
-           'mask_rcnn_resnet50_v1b_coco']
+           'mask_rcnn_resnet50_v1b_coco',
+           'mask_rcnn_resnet50_v1b_bdd',
+           'mask_rcnn_resnet101_v1b_bdd']
 
 
 class Mask(nn.HybridBlock):
@@ -60,6 +63,64 @@ class Mask(nn.HybridBlock):
         x = x.reshape((-4, self._batch_images, -1, 0, 0, 0))
         return x
 
+class DrivableMaps(nn.HybridBlock):
+    r"""Mask predictor head
+
+    Parameters
+    ----------
+    batch_images : int
+        Used to reshape output
+    num_classes : int
+        Used to determine number of output channels
+    mask_channels : int
+        Used to determine number of hidden channels
+
+    """
+    def __init__(self, batch_images, num_classes, channels, norm_layer=nn.InstanceNorm, norm_kwargs={}, **kwargs):
+        super(DrivableMaps, self).__init__(**kwargs)
+        self._batch_images = batch_images
+        init = mx.init.Xavier(rnd_type='gaussian', factor_type='out', magnitude=2)
+        with self.name_scope():
+            self.map_head = nn.HybridSequential()
+            self.map_head.add(nn.Conv2D(in_channels=1024, channels=channels*8, kernel_size=3, padding=1))
+            self.map_head.add(norm_layer(**norm_kwargs))
+            self.map_head.add(nn.Activation('relu'))
+
+            self.map_head.add(nn.Conv2DTranspose(channels*4, kernel_size=4, strides=2,
+                                        padding=1, weight_initializer=init))
+            self.map_head.add(norm_layer(**norm_kwargs))
+            self.map_head.add(nn.Activation('relu'))
+            
+            self.map_head.add(nn.Conv2D(channels*2, kernel_size=3, padding=1))
+            self.map_head.add(norm_layer(**norm_kwargs))
+            self.map_head.add(nn.Activation('relu'))
+            
+            self.map_head.add(nn.Dropout(0.1))
+            self.map_head.add(nn.Conv2DTranspose(channels, kernel_size=4, strides=2,
+                                        padding=1, weight_initializer=init))
+            self.map_head.add(norm_layer(**norm_kwargs))
+            self.map_head.add(nn.Activation('relu'))
+            self.map_head.add(nn.Conv2D(num_classes, kernel_size=(1, 1), strides=(1, 1), padding=(0, 0),
+                            weight_initializer=init))
+
+    def hybrid_forward(self, F, x):
+        """Forward Mask Head.
+
+        The behavior during traing and inference is different.
+
+        Parameters
+        ----------
+        x : mxnet.nd.NDArray or mxnet.symbol
+            The network input tensor of shape (B * N, fC, fH, fW).
+
+        Returns
+        -------
+        x : mxnet.nd.NDArray or mxnet.symbol
+            Mask prediction of shape (B, N, C, MS, MS)
+
+        """
+        x = self.map_head(x)
+        return x
 
 class MaskRCNN(FasterRCNN):
     r"""Mask RCNN network.
@@ -80,11 +141,10 @@ class MaskRCNN(FasterRCNN):
                  mask_channels=256, rcnn_max_dets=1000, **kwargs):
         super(MaskRCNN, self).__init__(features, top_features, classes,
                                        additional_output=True, **kwargs)
-        self._rcnn_max_dets = rcnn_max_dets
+        self._rcnn_max_dets = rcnn_max_dets 
+        self.driable_num_class = 3
         with self.name_scope():
-            self.mask = Mask(self._max_batch, self.num_class, mask_channels)
-            self.mask_target = MaskTargetGenerator(
-                self._max_batch, self._num_sample, self.num_class, self._roi_size)
+            self.drivable_maps = DrivableMaps(self._max_batch, self.driable_num_class, mask_channels)
 
     def hybrid_forward(self, F, x, gt_box=None):
         """Forward Mask RCNN network.
@@ -107,13 +167,13 @@ class MaskRCNN(FasterRCNN):
         """
         if autograd.is_training():
             cls_pred, box_pred, rpn_box, samples, matches, \
-                raw_rpn_score, raw_rpn_box, anchors, top_feat = \
+                raw_rpn_score, raw_rpn_box, anchors, top_feat, img_feat = \
                 super(MaskRCNN, self).hybrid_forward(F, x, gt_box)
-            mask_pred = self.mask(top_feat)
-            return cls_pred, box_pred, mask_pred, rpn_box, samples, matches, \
+            drivable_maps_pred = self.drivable_maps(img_feat)
+            return cls_pred, box_pred, drivable_maps_pred, rpn_box, samples, matches, \
                  raw_rpn_score, raw_rpn_box, anchors
         else:
-            ids, scores, boxes, feat = \
+            ids, scores, boxes, top_feat, img_feat = \
                 super(MaskRCNN, self).hybrid_forward(F, x)
 
             # (B, N * (C - 1), 1) -> (B, N * (C - 1)) -> (B, topk)
@@ -133,19 +193,26 @@ class MaskRCNN(FasterRCNN):
             padded_rois = F.stop_gradient(padded_rois)
 
             # pool to roi features
+            # print('top_feat',top_feat.shape)
+            # print('img_feat',img_feat.shape)
             if self._roi_mode == 'pool':
                 pooled_feat = F.ROIPooling(
-                    feat, padded_rois, self._roi_size, 1. / self._stride)
+                    top_feat, padded_rois, self._roi_size, 1. / self._stride)
             elif self._roi_mode == 'align':
                 pooled_feat = F.contrib.ROIAlign(
-                    feat, padded_rois, self._roi_size, 1. / self._stride, sample_ratio=2)
+                    top_feat, padded_rois, self._roi_size, 1. / self._stride, sample_ratio=2)
             else:
                 raise ValueError("Invalid roi mode: {}".format(self._roi_mode))
-
+            # print('pooled_feat',pooled_feat.shape)
+            # print('top_features',self.top_features)
             # run top_features again
-            top_feat = self.top_features(pooled_feat)
+            # top_feat = self.top_features(pooled_feat)
             # (B, N, C, pooled_size * 2, pooled_size * 2)
-            rcnn_mask = self.mask(top_feat)
+            # rcnn_mask = self.mask(top_feat)
+            # print('feat', feat.shape) #(1, 1024, 36, 63)
+
+            drivable_maps_pred = self.drivable_maps(img_feat)
+            # print('feat', drivable_maps_pred.shape)
             # index the B dimension (B * N,)
             batch_ids = F.arange(0, self._max_batch, repeat=num_rois)
             # index the N dimension (B * N,)
@@ -155,15 +222,15 @@ class MaskRCNN(FasterRCNN):
             # clip to 0 to max class
             class_ids = F.clip(class_ids, 0, self.num_class)
             # pick from (B, N, C, PS*2, PS*2) -> (B * N, PS*2, PS*2)
-            indices = F.stack(batch_ids, roi_ids, class_ids, axis=0)
-            masks = F.gather_nd(rcnn_mask, indices)
+            # indices = F.stack(batch_ids, roi_ids, class_ids, axis=0)
+            # masks = F.gather_nd(rcnn_mask, indices)
             # (B * N, PS*2, PS*2) -> (B, N, PS*2, PS*2)
-            masks = masks.reshape((-4, self._max_batch, num_rois, 0, 0))
+            # masks = masks.reshape((-4, self._max_batch, num_rois, 0, 0))
             # output prob
-            masks = F.sigmoid(masks)
+            # masks = F.sigmoid(masks)
 
             # ids (B, N, 1), scores (B, N, 1), boxes (B, N, 4), masks (B, N, PS*2, PS*2)
-            return ids, scores, boxes, masks
+            return ids, scores, boxes, drivable_maps_pred
 
 def get_mask_rcnn(name, dataset, pretrained=False, ctx=mx.cpu(),
                   root=os.path.join('~', '.mxnet', 'models'), **kwargs):
@@ -192,7 +259,9 @@ def get_mask_rcnn(name, dataset, pretrained=False, ctx=mx.cpu(),
     if pretrained:
         from ..model_store import get_model_file
         full_name = '_'.join(('mask_rcnn', name, dataset))
-        net.load_parameters(get_model_file(full_name, root=root), ctx=ctx)
+        print('full_name', full_name)
+        net.load_parameters(os.path.join(root, full_name+'.params'), ctx=ctx, allow_missing=True, ignore_extra=True)
+        # net.load_parameters(get_model_file(full_name, root=root), ctx=ctx, allow_missing=True, ignore_extra=True)
     return net
 
 def mask_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwargs):
@@ -234,6 +303,114 @@ def mask_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwargs
         features=features, top_features=top_features, classes=classes,
         mask_channels=256, rcnn_max_dets=1000,
         short=800, max_size=1333, train_patterns=train_patterns,
+        nms_thresh=0.5, nms_topk=-1, post_nms=-1,
+        roi_mode='align', roi_size=(14, 14), stride=16, clip=4.42,
+        rpn_channel=1024, base_size=16, scales=(2, 4, 8, 16, 32),
+        ratios=(0.5, 1, 2), alloc_size=(128, 128), rpn_nms_thresh=0.7,
+        rpn_train_pre_nms=12000, rpn_train_post_nms=2000,
+        rpn_test_pre_nms=6000, rpn_test_post_nms=1000, rpn_min_size=0,
+        num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
+        **kwargs)
+
+
+def mask_rcnn_resnet50_v1b_bdd(pretrained=False, pretrained_base=True, **kwargs):
+    r"""Mask RCNN model from the paper
+    "He, K., Gkioxari, G., Doll&ar, P., & Girshick, R. (2017). Mask R-CNN"
+
+    Parameters
+    ----------
+    pretrained : bool, optional, default is False
+        Load pretrained weights.
+    pretrained_base : bool, optional, default is True
+        Load pretrained base network, the extra layers are randomized. Note that
+        if pretrained is `Ture`, this has no effect.
+    ctx : Context, default CPU
+        The context in which to load the pretrained weights.
+    root : str, default '~/.mxnet/models'
+        Location for keeping the model parameters.
+
+    Examples
+    --------
+    >>> model = mask_rcnn_resnet50_v1b_bdd(pretrained=True)
+    >>> print(model)
+    """
+    from ..resnetv1b import resnet50_v1b
+    from ...data import BDDInstance
+    classes = BDDInstance.CLASSES
+    pretrained_base = False if pretrained else pretrained_base
+    base_network = resnet50_v1b(pretrained=pretrained_base, dilated=False, use_global_stats=True)
+    
+    features = nn.HybridSequential()
+    top_features = nn.HybridSequential()
+    for layer in ['conv1', 'bn1', 'relu', 'maxpool', 'layer1', 'layer2', 'layer3']:
+        features.add(getattr(base_network, layer))
+    for layer in ['layer4']:
+        top_features.add(getattr(base_network, layer))
+    train_patterns = '|'.join(['.*dense', '.*rpn', '.*mask',
+                               '.*down(2|3|4)_conv', '.*layers(2|3|4)_conv'])
+
+    # print('features', features)
+    # print('top_features', top_features)
+    return get_mask_rcnn(
+        name='resnet50_v1b', dataset='bdd', pretrained=pretrained,
+        features=features, top_features=top_features, classes=classes,
+        mask_channels=256, rcnn_max_dets=1000,
+        short=800, max_size=1280, train_patterns=train_patterns,
+        nms_thresh=0.5, nms_topk=-1, post_nms=-1,
+        roi_mode='align', roi_size=(14, 14), stride=16, clip=4.42,
+        rpn_channel=1024, base_size=16, scales=(2, 4, 8, 16, 32),
+        ratios=(0.5, 1, 2), alloc_size=(128, 128), rpn_nms_thresh=0.7,
+        rpn_train_pre_nms=12000, rpn_train_post_nms=2000,
+        rpn_test_pre_nms=6000, rpn_test_post_nms=1000, rpn_min_size=0,
+        num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
+        **kwargs)
+
+
+
+
+def mask_rcnn_resnet101_v1b_bdd(pretrained=False, pretrained_base=True, **kwargs):
+    r"""Mask RCNN model from the paper
+    "He, K., Gkioxari, G., Doll&ar, P., & Girshick, R. (2017). Mask R-CNN"
+
+    Parameters
+    ----------
+    pretrained : bool, optional, default is False
+        Load pretrained weights.
+    pretrained_base : bool, optional, default is True
+        Load pretrained base network, the extra layers are randomized. Note that
+        if pretrained is `Ture`, this has no effect.
+    ctx : Context, default CPU
+        The context in which to load the pretrained weights.
+    root : str, default '~/.mxnet/models'
+        Location for keeping the model parameters.
+
+    Examples
+    --------
+    >>> model = mask_rcnn_resnet101_v1b_bdd(pretrained=True)
+    >>> print(model)
+    """
+    from ..resnetv1b import resnet101_v1b
+    from ...data import BDDInstance
+    classes = BDDInstance.CLASSES
+    pretrained_base = False if pretrained else pretrained_base
+    base_network = resnet101_v1b(pretrained=pretrained_base, dilated=False, use_global_stats=True)
+    
+    features = nn.HybridSequential()
+    top_features = nn.HybridSequential()
+    for layer in ['conv1', 'bn1', 'relu', 'maxpool', 'layer1', 'layer2', 'layer3']:
+        features.add(getattr(base_network, layer))
+    for layer in ['layer4']:
+        top_features.add(getattr(base_network, layer))
+    train_patterns = '|'.join(['.*dense', '.*rpn', '.*mask',
+                               '.*down(2|3|4)_conv', '.*layers(2|3|4)_conv'])
+
+    # print('features', features)
+    # print('top_features', top_features)
+    return get_mask_rcnn(
+        name='resnet101_v1b', dataset='bdd', pretrained=pretrained,
+        features=features, top_features=top_features, classes=classes,
+        mask_channels=256, rcnn_max_dets=1000,
+        short=800, max_size=1280, train_patterns=train_patterns,
         nms_thresh=0.5, nms_topk=-1, post_nms=-1,
         roi_mode='align', roi_size=(14, 14), stride=16, clip=4.42,
         rpn_channel=1024, base_size=16, scales=(2, 4, 8, 16, 32),
